@@ -21,3 +21,5 @@ checkpoints/
 .idea/
 *.swp
 *.swo
+
+*.onnx
