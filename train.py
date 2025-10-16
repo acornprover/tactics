@@ -131,13 +131,28 @@ def train(model_cfg=None, train_cfg=None):
     global_step = 0
     best_val_loss = float("inf")
     patience_counter = 0
+    start_epoch = 0
+
+    # Resume from checkpoint if specified
+    if train_cfg.resume_from:
+        print(f"\nResuming from checkpoint: {train_cfg.resume_from}")
+        checkpoint = torch.load(train_cfg.resume_from, map_location=device)
+
+        model.load_state_dict(checkpoint["model"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        start_epoch = checkpoint["epoch"] + 1  # Start from next epoch
+        global_step = checkpoint["global_step"]
+        best_val_loss = checkpoint["best_val_loss"]
+
+        print(f"Resuming from epoch {start_epoch}, step {global_step}")
+        print(f"Best val loss so far: {best_val_loss:.4f}")
 
     # Training loop
     print("\nStarting training...")
     print(f"{'Epoch':<6} {'Step':<8} {'Train Loss':<12} {'Val Loss':<12} {'LR':<10} {'Time':<8}")
     print("-" * 70)
 
-    for epoch in range(train_cfg.max_epochs):
+    for epoch in range(start_epoch, train_cfg.max_epochs):
         model.train()
         epoch_start = time.time()
 

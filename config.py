@@ -41,7 +41,7 @@ class TrainingConfig:
 
     # Training
     batch_size: int = 32  # Number of sequences per batch
-    max_epochs: int = 10  # Maximum number of epochs (reduced for faster iteration)
+    max_epochs: int = 30  # Maximum number of epochs
     gradient_accumulation_steps: int = 1  # For larger effective batch size
 
     # Optimizer
@@ -57,6 +57,7 @@ class TrainingConfig:
 
     # Checkpointing and logging
     checkpoint_dir: str = "checkpoints"
+    resume_from: str = ""  # Path to checkpoint to resume from (empty = start fresh)
     log_interval: int = 100  # Log every N steps
     eval_interval: int = 1000  # Evaluate every N steps
     save_interval: int = 5000  # Save checkpoint every N steps
