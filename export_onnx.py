@@ -2,6 +2,7 @@
 Export trained model to ONNX format for Rust inference.
 """
 
+import os
 import torch
 import onnx
 import onnxruntime as ort
@@ -13,7 +14,7 @@ from model import GPT, ModelConfig
 def export_to_onnx(
     checkpoint_path: str = "checkpoints/best_model.pt",
     output_path: str = None,
-    opset_version: int = 17,
+    opset_version: int = 18,
 ):
     """
     Export PyTorch model to ONNX format.
@@ -43,16 +44,12 @@ def export_to_onnx(
     print("\nExporting to ONNX...")
 
     # Create dummy input (batch_size=1, seq_len=model.context_length)
+    # Using fixed shapes for better compatibility with ONNX Runtime
     dummy_input = torch.randint(
         0, model_cfg.vocab_size, (1, model_cfg.context_length), dtype=torch.long
     )
 
-    # Export with dynamic axes for flexible batch size and sequence length
-    dynamic_axes = {
-        "input": {0: "batch_size", 1: "sequence_length"},
-        "output": {0: "batch_size", 1: "sequence_length"},
-    }
-
+    # Export with fixed shapes (more reliable for inference)
     torch.onnx.export(
         model,
         dummy_input,
@@ -62,11 +59,27 @@ def export_to_onnx(
         do_constant_folding=True,
         input_names=["input"],
         output_names=["output"],
-        dynamic_axes=dynamic_axes,
         verbose=False,
     )
 
     print(f"✓ Exported to {output_path}")
+
+    # Convert external data to embedded (single file)
+    print("\nConverting to single-file format...")
+    onnx_model_proto = onnx.load(output_path)
+
+    # Save with embedded data
+    onnx.save(
+        onnx_model_proto,
+        output_path,
+        save_as_external_data=False,
+    )
+
+    # Clean up the .data file if it exists
+    data_file = output_path + ".data"
+    if os.path.exists(data_file):
+        os.remove(data_file)
+        print(f"✓ Removed external data file, all weights now embedded in {output_path}")
 
     # Verify the ONNX model
     print("\nVerifying ONNX model...")
@@ -78,15 +91,31 @@ def export_to_onnx(
     print("\nTesting ONNX Runtime inference...")
     ort_session = ort.InferenceSession(output_path)
 
-    # Test with different sequence lengths
-    for seq_len in [10, 50, model_cfg.context_length]:
-        test_input = np.random.randint(
-            0, model_cfg.vocab_size, (1, seq_len), dtype=np.int64
-        )
-        ort_inputs = {"input": test_input}
-        ort_outputs = ort_session.run(None, ort_inputs)
+    # Test with model's context length
+    test_input = np.random.randint(
+        0, model_cfg.vocab_size, (1, model_cfg.context_length), dtype=np.int64
+    )
+    ort_inputs = {"input": test_input}
+    ort_outputs = ort_session.run(None, ort_inputs)
 
-        print(f"  seq_len={seq_len}: input shape {test_input.shape} -> output shape {ort_outputs[0].shape}")
+    expected_shape = (1, model_cfg.context_length, model_cfg.vocab_size)
+    actual_shape = ort_outputs[0].shape
+
+    if actual_shape != expected_shape:
+        raise RuntimeError(f"Output shape mismatch: expected {expected_shape}, got {actual_shape}")
+
+    # Verify logits are reasonable (not all zeros, not NaN, not infinite)
+    logits = ort_outputs[0]
+    if np.isnan(logits).any():
+        raise RuntimeError("Output contains NaN values")
+    if np.isinf(logits).any():
+        raise RuntimeError("Output contains infinite values")
+    if np.abs(logits).max() < 1e-6:
+        raise RuntimeError("Output appears to be all zeros")
+
+    print(f"  ✓ Shape check: {actual_shape}")
+    print(f"  ✓ Logits range: [{logits.min():.2f}, {logits.max():.2f}]")
+    print(f"  ✓ Inference test passed!")
 
     print("\n✓ ONNX export successful!")
     print(f"\nModel saved to: {output_path}")
