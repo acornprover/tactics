@@ -11,13 +11,13 @@ from dataclasses import dataclass
 class ModelConfig:
     """Configuration for the GPT model architecture."""
 
-    # Model architecture
+    # Model architecture (~5M params - faster training)
     vocab_size: int = 256  # Byte-level encoding
-    context_length: int = 512  # Sequence length (can increase to 1024)
-    d_model: int = 320  # Model dimension
-    n_layers: int = 8  # Number of transformer layers
-    n_heads: int = 10  # Number of attention heads (head_dim = 32)
-    d_mlp: int = 1280  # MLP dimension (4 × d_model)
+    context_length: int = 256  # Sequence length (reduced for speed)
+    d_model: int = 256  # Model dimension
+    n_layers: int = 6  # Number of transformer layers
+    n_heads: int = 8  # Number of attention heads (head_dim = 32)
+    d_mlp: int = 1024  # MLP dimension (4 × d_model)
 
     # Regularization
     dropout: float = 0.1  # Dropout probability
@@ -41,7 +41,7 @@ class TrainingConfig:
 
     # Training
     batch_size: int = 32  # Number of sequences per batch
-    max_epochs: int = 60  # Maximum number of epochs
+    max_epochs: int = 10  # Maximum number of epochs (reduced for faster iteration)
     gradient_accumulation_steps: int = 1  # For larger effective batch size
 
     # Optimizer
