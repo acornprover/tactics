@@ -1,0 +1,10 @@
+[project]
+name = "tactics"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=2.3.4",
+    "torch>=2.9.0",
+    "tqdm>=4.67.1",
+]

@@ -1,1 +1,23 @@
 data/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Training artifacts
+checkpoints/
+*.pt
+*.pth
+
+# IDE - personal preferences only
+.idea/
+*.swp
+*.swo
