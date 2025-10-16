@@ -4,7 +4,7 @@ Code for training and evaluating a "tactics" model, which suggests proof steps g
 To generate training data from acornlib:
 
 ```
-acorn --generate-training data/training.txt
+acorn --lib <path/to/acornlib> --generate-training data/training.txt
 ```
 
 This dumps out all proof certificates in a structured format.
