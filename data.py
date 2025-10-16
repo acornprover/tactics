@@ -2,88 +2,137 @@
 Data loading and preprocessing for character-level training.
 """
 
+import os
+import glob
+import random
 import torch
 from torch.utils.data import Dataset, DataLoader
-from typing import Tuple
+from typing import Tuple, List
 
 
-class CharDataset(Dataset):
-    """Character-level dataset for proof tactics."""
+class ProofDataset(Dataset):
+    """Dataset that loads individual proof files and creates sliding window chunks."""
 
-    def __init__(self, data: str, context_length: int):
+    def __init__(self, proof_files: List[str], context_length: int):
         """
         Args:
-            data: String of training data
+            proof_files: List of paths to proof files
             context_length: Maximum sequence length
         """
-        self.data = data
         self.context_length = context_length
+        self.chunks = []
 
-        # Convert to byte-level encoding (vocab_size = 256)
-        self.tokens = torch.tensor([ord(c) % 256 for c in data], dtype=torch.long)
+        # Precompute all chunks from all proofs
+        for proof_file in proof_files:
+            with open(proof_file, "r", encoding="utf-8") as f:
+                text = f.read()
+
+            # Convert to byte-level tokens
+            tokens = [ord(c) % 256 for c in text]
+
+            # Create sliding windows with 50% overlap
+            stride = context_length // 2
+
+            if len(tokens) <= context_length:
+                # Short proof: just use it as-is
+                self.chunks.append(tokens)
+            else:
+                # Long proof: create multiple chunks
+                for i in range(0, len(tokens) - stride, stride):
+                    chunk = tokens[i : i + context_length]
+                    # Only keep substantial chunks (at least half context length)
+                    if len(chunk) >= context_length // 2:
+                        self.chunks.append(chunk)
+
+        print(f"Created {len(self.chunks):,} training chunks from {len(proof_files):,} proofs")
 
     def __len__(self):
-        # Number of possible sequences
-        return len(self.tokens) - self.context_length
+        return len(self.chunks)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Returns a sequence and its target (next tokens).
+        Return input/target sequences for a chunk.
 
         Args:
-            idx: Index of the sequence
+            idx: Index of the chunk
 
         Returns:
             (input_seq, target_seq) where target_seq is shifted by 1
         """
-        # Get sequence of length context_length + 1
-        chunk = self.tokens[idx : idx + self.context_length + 1]
+        tokens = self.chunks[idx]
+
+        # Convert to tensor
+        tokens = torch.tensor(tokens, dtype=torch.long)
+
+        # Pad if necessary (need context_length + 1 for input/target pairs)
+        if len(tokens) < self.context_length + 1:
+            padding = torch.full(
+                (self.context_length + 1 - len(tokens),), 0, dtype=torch.long
+            )
+            tokens = torch.cat([tokens, padding])
+        elif len(tokens) > self.context_length + 1:
+            # Truncate to exact size
+            tokens = tokens[: self.context_length + 1]
 
         # Input is all but last token, target is all but first token
-        x = chunk[:-1]
-        y = chunk[1:]
+        x = tokens[:-1]
+        y = tokens[1:]
 
         return x, y
 
 
 def load_data(
-    data_path: str, train_split: float = 0.9, context_length: int = 512
-) -> Tuple[CharDataset, CharDataset]:
+    data_dir: str = "data/proofs",
+    train_split: float = 0.9,
+    context_length: int = 256,
+    shuffle: bool = True,
+    seed: int = 42,
+) -> Tuple[ProofDataset, ProofDataset]:
     """
-    Load and split data into train and validation sets.
+    Load proof files and split into train and validation sets.
 
     Args:
-        data_path: Path to the training data file
+        data_dir: Directory containing proof files
         train_split: Fraction of data to use for training
         context_length: Maximum sequence length
+        shuffle: Whether to shuffle proof files before splitting
+        seed: Random seed for shuffling
 
     Returns:
         (train_dataset, val_dataset)
     """
-    # Read the data
-    with open(data_path, "r", encoding="utf-8") as f:
-        data = f.read()
+    # Get all proof files
+    proof_files = sorted(glob.glob(os.path.join(data_dir, "*.txt")))
 
-    print(f"Loaded {len(data):,} characters from {data_path}")
+    if len(proof_files) == 0:
+        raise ValueError(f"No proof files found in {data_dir}")
 
-    # Split into train and validation
-    split_idx = int(len(data) * train_split)
-    train_data = data[:split_idx]
-    val_data = data[split_idx:]
+    print(f"Found {len(proof_files):,} proof files in {data_dir}")
 
-    print(f"Train: {len(train_data):,} characters")
-    print(f"Val: {len(val_data):,} characters")
+    # Shuffle files if requested
+    if shuffle:
+        random.seed(seed)
+        random.shuffle(proof_files)
+        print(f"Shuffled proof files (seed={seed})")
+
+    # Split into train and validation by file list
+    split_idx = int(len(proof_files) * train_split)
+    train_files = proof_files[:split_idx]
+    val_files = proof_files[split_idx:]
+
+    print(f"Train: {len(train_files):,} proofs")
+    print(f"Val: {len(val_files):,} proofs")
 
     # Create datasets
-    train_dataset = CharDataset(train_data, context_length)
-    val_dataset = CharDataset(val_data, context_length)
+    train_dataset = ProofDataset(train_files, context_length)
+    val_dataset = ProofDataset(val_files, context_length)
 
     return train_dataset, val_dataset
 
 
 def create_dataloaders(
-    train_dataset: CharDataset,
-    val_dataset: CharDataset,
+    train_dataset: ProofDataset,
+    val_dataset: ProofDataset,
     batch_size: int = 32,
     num_workers: int = 0,
 ) -> Tuple[DataLoader, DataLoader]:
@@ -102,7 +151,7 @@ def create_dataloaders(
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=True,  # Shuffle within epoch
         num_workers=num_workers,
         pin_memory=True,
     )
@@ -131,7 +180,17 @@ def decode(tokens: torch.Tensor) -> str:
     if tokens.dim() > 1:
         tokens = tokens[0]  # Take first sequence if batched
 
-    return "".join(chr(int(t)) for t in tokens.cpu().numpy())
+    # Remove padding (0s at the end)
+    tokens = tokens.cpu().numpy()
+    # Find first padding token
+    try:
+        pad_idx = list(tokens).index(0)
+        tokens = tokens[:pad_idx]
+    except ValueError:
+        # No padding found
+        pass
+
+    return "".join(chr(int(t)) for t in tokens)
 
 
 def sample_generation(

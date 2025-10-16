@@ -36,7 +36,7 @@ class TrainingConfig:
     """Configuration for training hyperparameters."""
 
     # Data
-    data_path: str = "data/training.txt"
+    data_dir: str = "data/proofs"  # Directory containing proof files
     train_split: float = 0.9  # 90% train, 10% validation
 
     # Training

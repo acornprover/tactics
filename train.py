@@ -100,7 +100,7 @@ def train(model_cfg=None, train_cfg=None):
     # Load data
     print("\nLoading data...")
     train_dataset, val_dataset = load_data(
-        train_cfg.data_path, train_cfg.train_split, model_cfg.context_length
+        train_cfg.data_dir, train_cfg.train_split, model_cfg.context_length
     )
 
     train_loader, val_loader = create_dataloaders(
