@@ -7,7 +7,7 @@ Code for training and evaluating a "tactics" model, which suggests proof steps g
 To generate training data from acornlib:
 
 ```bash
-acorn --lib /path/to/acornlib --generate-training ./data/proofs
+acorn --lib /path/to/acornlib training ./data/proofs
 ```
 
 This dumps out all proof certificates in a structured format, with one proof per file in `data/proofs/`.
