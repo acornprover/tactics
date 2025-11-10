@@ -12,7 +12,7 @@ Generate proof data from acornlib:
 acorn --lib /path/to/acornlib training ./data/proofs
 ```
 
-This creates one proof file per theorem in `data/proofs/`. Format uses @T (theorem), @G (goal), @C (constraint), @P (premise) markers.
+This creates one proof file per theorem in `data/proofs/`. Format uses @T (theorem prefix), @G (goal), @C (counterfactual), @P (proof) markers.
 
 When you regenerate proof data, you typically want to clean up old checkpoints and tokenizers.
 
