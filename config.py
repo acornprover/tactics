@@ -11,8 +11,11 @@ from dataclasses import dataclass
 class ModelConfig:
     """Configuration for the GPT model architecture."""
 
+    # Tokenizer
+    tokenizer_path: str = "checkpoints"  # Path to tokenizer directory
+    vocab_size: int = 4096  # BPE vocabulary size (set by tokenizer)
+
     # Model architecture (~5M params - faster training)
-    vocab_size: int = 256  # Byte-level encoding
     context_length: int = 256  # Sequence length (reduced for speed)
     d_model: int = 256  # Model dimension
     n_layers: int = 6  # Number of transformer layers

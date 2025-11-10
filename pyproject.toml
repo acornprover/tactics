@@ -8,6 +8,7 @@ dependencies = [
     "onnx>=1.19.1",
     "onnxruntime>=1.23.1",
     "onnxscript>=0.5.4",
+    "tokenizers>=0.22.1",
     "torch>=2.9.0",
     "tqdm>=4.67.1",
 ]

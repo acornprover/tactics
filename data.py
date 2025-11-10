@@ -1,5 +1,5 @@
 """
-Data loading and preprocessing for character-level training.
+Data loading and preprocessing for BPE tokenized training.
 """
 
 import os
@@ -8,18 +8,21 @@ import random
 import torch
 from torch.utils.data import Dataset, DataLoader
 from typing import Tuple, List
+from tokenizer import BPETokenizer
 
 
 class ProofDataset(Dataset):
     """Dataset that loads individual proof files and creates sliding window chunks."""
 
-    def __init__(self, proof_files: List[str], context_length: int):
+    def __init__(self, proof_files: List[str], tokenizer: BPETokenizer, context_length: int):
         """
         Args:
             proof_files: List of paths to proof files
+            tokenizer: BPE tokenizer instance
             context_length: Maximum sequence length
         """
         self.context_length = context_length
+        self.tokenizer = tokenizer
         self.chunks = []
 
         # Precompute all chunks from all proofs
@@ -27,8 +30,8 @@ class ProofDataset(Dataset):
             with open(proof_file, "r", encoding="utf-8") as f:
                 text = f.read()
 
-            # Convert to byte-level tokens
-            tokens = [ord(c) % 256 for c in text]
+            # Tokenize using BPE
+            tokens = tokenizer.encode(text)
 
             # Create sliding windows with 50% overlap
             stride = context_length // 2
@@ -82,6 +85,7 @@ class ProofDataset(Dataset):
 
 
 def load_data(
+    tokenizer: BPETokenizer,
     data_dir: str = "data/proofs",
     train_split: float = 0.9,
     context_length: int = 256,
@@ -92,6 +96,7 @@ def load_data(
     Load proof files and split into train and validation sets.
 
     Args:
+        tokenizer: BPE tokenizer instance
         data_dir: Directory containing proof files
         train_split: Fraction of data to use for training
         context_length: Maximum sequence length
@@ -124,8 +129,8 @@ def load_data(
     print(f"Val: {len(val_files):,} proofs")
 
     # Create datasets
-    train_dataset = ProofDataset(train_files, context_length)
-    val_dataset = ProofDataset(val_files, context_length)
+    train_dataset = ProofDataset(train_files, tokenizer, context_length)
+    val_dataset = ProofDataset(val_files, tokenizer, context_length)
 
     return train_dataset, val_dataset
 
@@ -167,12 +172,13 @@ def create_dataloaders(
     return train_loader, val_loader
 
 
-def decode(tokens: torch.Tensor) -> str:
+def decode(tokens: torch.Tensor, tokenizer: BPETokenizer) -> str:
     """
-    Decode tokens back to string.
+    Decode tokens back to string using the tokenizer.
 
     Args:
         tokens: Tensor of token indices
+        tokenizer: BPE tokenizer instance
 
     Returns:
         Decoded string
@@ -180,21 +186,15 @@ def decode(tokens: torch.Tensor) -> str:
     if tokens.dim() > 1:
         tokens = tokens[0]  # Take first sequence if batched
 
-    # Remove padding (0s at the end)
-    tokens = tokens.cpu().numpy()
-    # Find first padding token
-    try:
-        pad_idx = list(tokens).index(0)
-        tokens = tokens[:pad_idx]
-    except ValueError:
-        # No padding found
-        pass
+    # Convert to list of ints
+    tokens = tokens.cpu().tolist()
 
-    return "".join(chr(int(t)) for t in tokens)
+    return tokenizer.decode(tokens)
 
 
 def sample_generation(
     model,
+    tokenizer: BPETokenizer,
     prompt: str,
     max_new_tokens: int = 100,
     temperature: float = 0.8,
@@ -206,6 +206,7 @@ def sample_generation(
 
     Args:
         model: The language model
+        tokenizer: BPE tokenizer instance
         prompt: Starting prompt
         max_new_tokens: Number of tokens to generate
         temperature: Sampling temperature
@@ -217,8 +218,9 @@ def sample_generation(
     """
     model.eval()
 
-    # Encode the prompt
-    tokens = torch.tensor([[ord(c) % 256 for c in prompt]], dtype=torch.long).to(device)
+    # Encode the prompt using tokenizer
+    prompt_tokens = tokenizer.encode(prompt)
+    tokens = torch.tensor([prompt_tokens], dtype=torch.long).to(device)
 
     with torch.no_grad():
         for _ in range(max_new_tokens):
@@ -251,4 +253,4 @@ def sample_generation(
             # Append to sequence
             tokens = torch.cat([tokens, next_token], dim=1)
 
-    return decode(tokens[0])
+    return decode(tokens[0], tokenizer)

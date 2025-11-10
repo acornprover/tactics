@@ -1,5 +1,5 @@
 """
-Training script for character-level GPT on proof tactics.
+Training script for BPE tokenized GPT on proof tactics.
 """
 
 import os
@@ -12,6 +12,7 @@ from tqdm import tqdm
 from model import GPT, ModelConfig
 from data import load_data, create_dataloaders, decode, sample_generation
 from config import model_config, training_config
+from tokenizer import BPETokenizer
 
 
 def get_lr(step: int, config) -> float:
@@ -97,10 +98,18 @@ def train(model_cfg=None, train_cfg=None):
 
     print(f"Using device: {device}")
 
+    # Load tokenizer
+    print("\nLoading tokenizer...")
+    tokenizer = BPETokenizer.load(model_cfg.tokenizer_path)
+    print(f"Tokenizer vocab size: {tokenizer.vocab_size}")
+
+    # Update model config with actual vocab size from tokenizer
+    model_cfg.vocab_size = tokenizer.vocab_size
+
     # Load data
     print("\nLoading data...")
     train_dataset, val_dataset = load_data(
-        train_cfg.data_dir, train_cfg.train_split, model_cfg.context_length
+        tokenizer, train_cfg.data_dir, train_cfg.train_split, model_cfg.context_length
     )
 
     train_loader, val_loader = create_dataloaders(
@@ -216,6 +225,7 @@ def train(model_cfg=None, train_cfg=None):
                         "epoch": epoch,
                         "global_step": global_step,
                         "best_val_loss": best_val_loss,
+                        "tokenizer_path": model_cfg.tokenizer_path,
                     }
                     torch.save(
                         checkpoint,
@@ -231,6 +241,7 @@ def train(model_cfg=None, train_cfg=None):
                     prompt = "@T\ntheorem "
                     sample = sample_generation(
                         model,
+                        tokenizer,
                         prompt,
                         max_new_tokens=200,
                         temperature=train_cfg.sample_temperature,
@@ -248,6 +259,7 @@ def train(model_cfg=None, train_cfg=None):
                     "epoch": epoch,
                     "global_step": global_step,
                     "best_val_loss": best_val_loss,
+                    "tokenizer_path": model_cfg.tokenizer_path,
                 }
                 torch.save(
                     checkpoint,
