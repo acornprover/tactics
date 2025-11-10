@@ -108,6 +108,27 @@ def export_to_onnx(
     shutil.copy(tokenizer_src, tokenizer_dst)
     print(f"✓ Copied tokenizer to {tokenizer_dst}")
 
+    # Create config.json
+    print("\nCreating config.json...")
+    config = {
+        "model_type": "gpt",
+        "vocab_size": model_cfg.vocab_size,
+        "context_length": model_cfg.context_length,
+        "d_model": model_cfg.d_model,
+        "n_layers": model_cfg.n_layers,
+        "n_heads": model_cfg.n_heads,
+        "d_mlp": model_cfg.d_mlp,
+        "dropout": model_cfg.dropout,
+        "use_bias": model_cfg.use_bias,
+        "tie_embeddings": model_cfg.tie_embeddings
+    }
+
+    import json
+    config_path = output_path / "config.json"
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
+    print(f"✓ Created config at {config_path}")
+
     # Verify the ONNX model
     print("\nVerifying ONNX model...")
     onnx_model = onnx.load(str(onnx_path))
@@ -149,7 +170,8 @@ def export_to_onnx(
     print("="*60)
     print(f"Output directory: {output_dir}")
     print(f"  ├── model.onnx")
-    print(f"  └── tokenizer.json")
+    print(f"  ├── tokenizer.json")
+    print(f"  └── config.json")
     print(f"\nModel info:")
     print(f"  Vocab size: {model_cfg.vocab_size}")
     print(f"  Context length: {model_cfg.context_length}")

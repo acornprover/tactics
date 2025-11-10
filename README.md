@@ -79,13 +79,16 @@ Export for use by Acorn:
 uv run export_onnx.py
 ```
 
-This creates a timestamped directory in `export/` with both files:
+This creates a timestamped directory in `export/` following HuggingFace convention:
 
 ```
 export/tactics-2025-11-10-14-30-45/
-├── model.onnx
-└── tokenizer.json
+├── model.onnx       # ONNX model weights
+├── tokenizer.json   # HuggingFace tokenizer
+└── config.json      # Model architecture config
 ```
+
+The export format follows HuggingFace conventions for compatibility with standard ONNX inference tools.
 
 Custom export directory: `uv run export_onnx.py checkpoints/best_model.pt export/my-model`
 
