@@ -1,10 +1,9 @@
 """
-Training configuration for character-level GPT on proof tactics.
-
-Based on the training plan in TRAINING_PLAN.md.
+Training configuration for BPE-tokenized GPT on proof tactics.
 """
 
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -13,7 +12,7 @@ class ModelConfig:
 
     # Tokenizer
     tokenizer_path: str = "checkpoints"  # Path to tokenizer directory
-    vocab_size: int = 4096  # BPE vocabulary size (set by tokenizer)
+    vocab_size: Optional[int] = None  # Automatically set from tokenizer
 
     # Model architecture (~5M params - faster training)
     context_length: int = 256  # Sequence length (reduced for speed)
