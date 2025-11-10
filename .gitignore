@@ -1,4 +1,5 @@
 data/
+export/
 
 # Python
 __pycache__/

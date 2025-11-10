@@ -43,7 +43,7 @@ class TrainingConfig:
 
     # Training
     batch_size: int = 32  # Number of sequences per batch
-    max_epochs: int = 30  # Maximum number of epochs
+    max_epochs: int = 100  # Maximum number of epochs
     gradient_accumulation_steps: int = 1  # For larger effective batch size
 
     # Optimizer

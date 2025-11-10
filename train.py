@@ -277,6 +277,28 @@ def train(model_cfg=None, train_cfg=None):
             f"{epoch + 1:<6} {global_step:<8} {'-':<12} {val_loss:<12.4f} {lr:<10.2e} {epoch_time:<8.1f}s"
         )
 
+        # Save best model if this epoch achieved better val loss
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience_counter = 0
+
+            checkpoint = {
+                "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "model_config": model_cfg.__dict__,
+                "epoch": epoch,
+                "global_step": global_step,
+                "best_val_loss": best_val_loss,
+                "tokenizer_path": model_cfg.tokenizer_path,
+            }
+            torch.save(
+                checkpoint,
+                os.path.join(train_cfg.checkpoint_dir, "best_model.pt"),
+            )
+            print(f"  → Saved best model (val_loss: {val_loss:.4f})")
+        else:
+            patience_counter += 1
+
         # Early stopping
         if patience_counter >= train_cfg.patience:
             print(f"\nEarly stopping: validation loss hasn't improved for {train_cfg.patience} evaluations")

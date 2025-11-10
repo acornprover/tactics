@@ -39,8 +39,15 @@ def export_to_onnx(
     print(f"\nLoading checkpoint from {checkpoint_path}...")
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
 
-    # Reconstruct model config
-    model_cfg = ModelConfig(**checkpoint["model_config"])
+    # Reconstruct model config (tokenizer_path is stored separately in checkpoint)
+    model_config_dict = dict(checkpoint["model_config"])
+    tokenizer_path = checkpoint["tokenizer_path"]
+
+    # Remove tokenizer_path from model_config if it's there
+    model_config_dict.pop("tokenizer_path", None)
+
+    model_cfg = ModelConfig(**model_config_dict)
+    model_cfg.tokenizer_path = tokenizer_path
     print(f"Model config: {model_cfg}")
 
     # Create and load model
