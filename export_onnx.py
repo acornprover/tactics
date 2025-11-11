@@ -56,25 +56,64 @@ def export_to_onnx(
     model.eval()
 
     # Export ONNX model
-    print("\nExporting model to ONNX...")
+    print("\nExporting model to ONNX with KV caching...")
     onnx_path = output_path / "model.onnx"
 
-    # Create dummy input (batch_size=1, seq_len=model.context_length)
-    # Using fixed shapes for better compatibility with ONNX Runtime
-    dummy_input = torch.randint(
-        0, model_cfg.vocab_size, (1, model_cfg.context_length), dtype=torch.long
-    )
+    # Create dummy input for cached generation
+    # Input: single token (batch_size=1, seq_len=1)
+    dummy_input = torch.randint(0, model_cfg.vocab_size, (1, 1), dtype=torch.long)
 
-    # Export with fixed shapes (more reliable for inference)
+    # Create dummy past key-value cache
+    # For first token: use cache_len=1 with zeros (will be masked out)
+    # Shape: (batch_size, n_heads, cache_seq_len, head_dim)
+    dummy_past_kv = []
+    cache_seq_len = 1  # Minimal size for ONNX export
+    head_dim = model_cfg.d_model // model_cfg.n_heads
+
+    for _ in range(model_cfg.n_layers):
+        k = torch.zeros(1, model_cfg.n_heads, cache_seq_len, head_dim)
+        v = torch.zeros(1, model_cfg.n_heads, cache_seq_len, head_dim)
+        dummy_past_kv.append((k, v))
+
+    # Build input and output names for ONNX
+    input_names = ["input_ids"]
+    output_names = ["logits"]
+
+    for i in range(model_cfg.n_layers):
+        input_names.extend([f"past_key_values.{i}.key", f"past_key_values.{i}.value"])
+        output_names.extend([f"present_key_values.{i}.key", f"present_key_values.{i}.value"])
+
+    # Configure dynamic axes for variable sequence lengths
+    dynamic_axes = {
+        "input_ids": {0: "batch_size", 1: "sequence_length"},
+        "logits": {0: "batch_size", 1: "sequence_length"},
+    }
+
+    for i in range(model_cfg.n_layers):
+        # Past KV can have variable sequence length
+        dynamic_axes[f"past_key_values.{i}.key"] = {0: "batch_size", 2: "kv_sequence_length"}
+        dynamic_axes[f"past_key_values.{i}.value"] = {0: "batch_size", 2: "kv_sequence_length"}
+        # Present KV will have kv_sequence_length + 1
+        dynamic_axes[f"present_key_values.{i}.key"] = {0: "batch_size", 2: "total_sequence_length"}
+        dynamic_axes[f"present_key_values.{i}.value"] = {0: "batch_size", 2: "total_sequence_length"}
+
+    # Flatten inputs for ONNX export
+    # Structure: (input_ids, targets, past_kv_0_key, past_kv_0_value, ..., past_kv_N_value)
+    export_args = [dummy_input, None]  # idx, targets
+    for k, v in dummy_past_kv:
+        export_args.extend([k, v])
+
+    # Export with KV caching and dynamic axes
     torch.onnx.export(
         model,
-        dummy_input,
+        tuple(export_args),
         str(onnx_path),
         export_params=True,
         opset_version=opset_version,
         do_constant_folding=True,
-        input_names=["input"],
-        output_names=["output"],
+        input_names=input_names,
+        output_names=output_names,
+        dynamic_axes=dynamic_axes,
         verbose=False,
     )
 
@@ -117,10 +156,12 @@ def export_to_onnx(
         "d_model": model_cfg.d_model,
         "n_layers": model_cfg.n_layers,
         "n_heads": model_cfg.n_heads,
+        "head_dim": model_cfg.d_model // model_cfg.n_heads,
         "d_mlp": model_cfg.d_mlp,
         "dropout": model_cfg.dropout,
         "use_bias": model_cfg.use_bias,
-        "tie_embeddings": model_cfg.tie_embeddings
+        "tie_embeddings": model_cfg.tie_embeddings,
+        "use_cache": True
     }
 
     import json
@@ -136,21 +177,47 @@ def export_to_onnx(
     print("✓ ONNX model is valid")
 
     # Test inference with ONNX Runtime
-    print("\nTesting ONNX Runtime inference...")
+    print("\nTesting ONNX Runtime inference with KV caching...")
     ort_session = ort.InferenceSession(str(onnx_path))
 
-    # Test with model's context length
-    test_input = np.random.randint(
-        0, model_cfg.vocab_size, (1, model_cfg.context_length), dtype=np.int64
-    )
-    ort_inputs = {"input": test_input}
+    # Test with single token input and cache
+    test_input = np.random.randint(0, model_cfg.vocab_size, (1, 1), dtype=np.int64)
+
+    # Create initial cache (zeros for first token)
+    ort_inputs = {"input_ids": test_input}
+    for i in range(model_cfg.n_layers):
+        cache_shape = (1, model_cfg.n_heads, 1, head_dim)
+        ort_inputs[f"past_key_values.{i}.key"] = np.zeros(cache_shape, dtype=np.float32)
+        ort_inputs[f"past_key_values.{i}.value"] = np.zeros(cache_shape, dtype=np.float32)
+
+    # Run first inference
     ort_outputs = ort_session.run(None, ort_inputs)
 
-    expected_shape = (1, model_cfg.context_length, model_cfg.vocab_size)
-    actual_shape = ort_outputs[0].shape
+    # Check outputs
+    expected_logits_shape = (1, 1, model_cfg.vocab_size)
+    actual_logits_shape = ort_outputs[0].shape
 
-    if actual_shape != expected_shape:
-        raise RuntimeError(f"Output shape mismatch: expected {expected_shape}, got {actual_shape}")
+    if actual_logits_shape != expected_logits_shape:
+        raise RuntimeError(f"Logits shape mismatch: expected {expected_logits_shape}, got {actual_logits_shape}")
+
+    # Verify we got present_key_values back
+    expected_num_outputs = 1 + (2 * model_cfg.n_layers)  # logits + (key, value) per layer
+    if len(ort_outputs) != expected_num_outputs:
+        raise RuntimeError(f"Expected {expected_num_outputs} outputs, got {len(ort_outputs)}")
+
+    # Verify cache shapes (should be (1, n_heads, 2, head_dim) after first token)
+    for i in range(model_cfg.n_layers):
+        key_idx = 1 + (2 * i)
+        val_idx = 1 + (2 * i) + 1
+        expected_cache_shape = (1, model_cfg.n_heads, 2, head_dim)  # cache_len=1 + new_token=1
+        if ort_outputs[key_idx].shape != expected_cache_shape:
+            raise RuntimeError(
+                f"Layer {i} key cache shape mismatch: expected {expected_cache_shape}, got {ort_outputs[key_idx].shape}"
+            )
+        if ort_outputs[val_idx].shape != expected_cache_shape:
+            raise RuntimeError(
+                f"Layer {i} value cache shape mismatch: expected {expected_cache_shape}, got {ort_outputs[val_idx].shape}"
+            )
 
     # Verify logits are reasonable (not all zeros, not NaN, not infinite)
     logits = ort_outputs[0]
@@ -161,7 +228,8 @@ def export_to_onnx(
     if np.abs(logits).max() < 1e-6:
         raise RuntimeError("Output appears to be all zeros")
 
-    print(f"  ✓ Shape check: {actual_shape}")
+    print(f"  ✓ Logits shape: {actual_logits_shape}")
+    print(f"  ✓ Cache shape: {expected_cache_shape} (per layer)")
     print(f"  ✓ Logits range: [{logits.min():.2f}, {logits.max():.2f}]")
     print(f"  ✓ Inference test passed!")
 

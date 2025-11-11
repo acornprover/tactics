@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from dataclasses import dataclass
+from typing import Optional, Tuple
 
 
 @dataclass
@@ -69,7 +70,9 @@ class CausalSelfAttention(nn.Module):
             ),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, past_kv: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
+    ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         B, T, C = x.size()  # Batch size, sequence length, embedding dimension
 
         # Calculate Q, K, V
@@ -81,11 +84,34 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
         v = v.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
 
+        # Concatenate with past key-value cache if provided
+        if past_kv is not None:
+            past_k, past_v = past_kv
+            k = torch.cat([past_k, k], dim=2)  # Concatenate along sequence dimension
+            v = torch.cat([past_v, v], dim=2)
+
+        # Store present key-value for next iteration
+        present_kv = (k, v)
+
+        # Get sequence lengths for masking
+        kv_len = k.size(2)  # Total KV sequence length (past + current)
+
         # Scaled dot-product attention
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
 
         # Apply causal mask
-        att = att.masked_fill(self.mask[:, :, :T, :T] == 0, float("-inf"))
+        # When using cache: Q has length T (typically 1), KV has length kv_len
+        # We need mask of shape (T, kv_len) from the full causal mask
+        if past_kv is not None:
+            # Calculate past sequence length
+            past_len = kv_len - T
+            # Slice the appropriate portion of the mask
+            att = att.masked_fill(
+                self.mask[:, :, past_len : past_len + T, :kv_len] == 0, float("-inf")
+            )
+        else:
+            # Standard causal mask for non-cached case
+            att = att.masked_fill(self.mask[:, :, :T, :T] == 0, float("-inf"))
 
         # Softmax and dropout
         att = F.softmax(att, dim=-1)
@@ -98,7 +124,7 @@ class CausalSelfAttention(nn.Module):
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         y = self.proj_dropout(self.proj(y))
 
-        return y
+        return y, present_kv
 
 
 class MLP(nn.Module):
@@ -128,11 +154,14 @@ class TransformerBlock(nn.Module):
         self.norm2 = RMSNorm(config.d_model)
         self.mlp = MLP(config)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Pre-norm architecture
-        x = x + self.attn(self.norm1(x))
+    def forward(
+        self, x: torch.Tensor, past_kv: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
+    ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        # Pre-norm architecture with KV cache
+        attn_out, present_kv = self.attn(self.norm1(x), past_kv)
+        x = x + attn_out
         x = x + self.mlp(self.norm2(x))
-        return x
+        return x, present_kv
 
 
 class GPT(nn.Module):
@@ -179,36 +208,59 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx: torch.Tensor, targets=None) -> torch.Tensor:
+    def forward(
+        self,
+        idx: torch.Tensor,
+        targets=None,
+        past_key_values: Optional[list] = None,
+        use_cache: bool = True,
+    ):
         """
-        Forward pass.
+        Forward pass with optional KV caching.
 
         Args:
             idx: Input token indices (B, T)
             targets: Target token indices (B, T) for loss calculation
+            past_key_values: List of past (key, value) tuples for each layer
+            use_cache: Whether to return present key-values for caching
 
         Returns:
-            logits (B, T, vocab_size) if targets is None
-            (logits, loss) if targets is provided
+            When use_cache=False and targets is None: logits (B, T, vocab_size)
+            When use_cache=False and targets provided: (logits, loss)
+            When use_cache=True and targets is None: (logits, present_key_values)
+            When use_cache=True and targets provided: (logits, loss, present_key_values)
         """
         B, T = idx.size()
+
+        # Calculate position offset if using cache
+        if past_key_values is not None:
+            past_length = past_key_values[0][0].size(2)  # Get seq length from first layer's key
+        else:
+            past_length = 0
+
         assert (
-            T <= self.config.context_length
-        ), f"Sequence length {T} exceeds context length {self.config.context_length}"
+            past_length + T <= self.config.context_length
+        ), f"Total sequence length {past_length + T} exceeds context length {self.config.context_length}"
 
         # Token embeddings
         tok_emb = self.token_embedding(idx)  # (B, T, d_model)
 
-        # Position embeddings
-        pos = torch.arange(0, T, dtype=torch.long, device=idx.device)  # (T,)
+        # Position embeddings with offset for cached generation
+        pos = torch.arange(
+            past_length, past_length + T, dtype=torch.long, device=idx.device
+        )  # (T,)
         pos_emb = self.position_embedding(pos)  # (T, d_model)
 
         # Combine embeddings
         x = self.dropout(tok_emb + pos_emb)
 
-        # Apply transformer blocks
-        for block in self.blocks:
-            x = block(x)
+        # Apply transformer blocks and collect present key-values
+        present_key_values = []
+        for i, block in enumerate(self.blocks):
+            past_kv = past_key_values[i] if past_key_values is not None else None
+            x, present_kv = block(x, past_kv)
+            if use_cache:
+                present_key_values.append(present_kv)
 
         # Final layer norm
         x = self.norm(x)
@@ -226,7 +278,14 @@ class GPT(nn.Module):
                 logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
             )
 
-        return (logits, loss) if loss is not None else logits
+        # Return appropriate values based on use_cache and targets
+        if use_cache:
+            if loss is not None:
+                return logits, loss, present_key_values
+            else:
+                return logits, present_key_values
+        else:
+            return (logits, loss) if loss is not None else logits
 
     @torch.no_grad()
     def generate(
