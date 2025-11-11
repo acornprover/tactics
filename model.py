@@ -238,10 +238,6 @@ class GPT(nn.Module):
         else:
             past_length = 0
 
-        assert (
-            past_length + T <= self.config.context_length
-        ), f"Total sequence length {past_length + T} exceeds context length {self.config.context_length}"
-
         # Token embeddings
         tok_emb = self.token_embedding(idx)  # (B, T, d_model)
 

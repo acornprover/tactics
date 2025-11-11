@@ -5,12 +5,55 @@ Export trained model to ONNX format for Rust inference.
 import os
 import shutil
 import torch
+import torch.nn as nn
 import onnx
 import onnxruntime as ort
 import numpy as np
 from datetime import datetime
 from pathlib import Path
 from model import GPT, ModelConfig
+
+
+class GPTWithFlattenedCache(nn.Module):
+    """Wrapper to flatten KV cache inputs/outputs for ONNX export."""
+
+    def __init__(self, model: GPT):
+        super().__init__()
+        self.model = model
+        self.n_layers = model.config.n_layers
+
+    def forward(self, input_ids, *past_kv_flat):
+        """
+        Forward with flattened cache inputs.
+
+        Args:
+            input_ids: Token indices (B, T)
+            *past_kv_flat: Flattened past key-values (key0, val0, key1, val1, ...)
+
+        Returns:
+            logits and flattened present key-values
+        """
+        # Reconstruct past_key_values list from flattened inputs
+        past_key_values = []
+        for i in range(self.n_layers):
+            k = past_kv_flat[i * 2]
+            v = past_kv_flat[i * 2 + 1]
+            past_key_values.append((k, v))
+
+        # Run model
+        logits, present_key_values = self.model(
+            input_ids,
+            targets=None,
+            past_key_values=past_key_values,
+            use_cache=True
+        )
+
+        # Flatten present_key_values for output
+        outputs = [logits]
+        for k, v in present_key_values:
+            outputs.extend([k, v])
+
+        return tuple(outputs)
 
 
 def export_to_onnx(
@@ -51,8 +94,12 @@ def export_to_onnx(
     print(f"Model config: {model_cfg}")
 
     # Create and load model
-    model = GPT(model_cfg)
-    model.load_state_dict(checkpoint["model"])
+    base_model = GPT(model_cfg)
+    base_model.load_state_dict(checkpoint["model"])
+    base_model.eval()
+
+    # Wrap model for ONNX export with flattened cache
+    model = GPTWithFlattenedCache(base_model)
     model.eval()
 
     # Export ONNX model
@@ -63,17 +110,17 @@ def export_to_onnx(
     # Input: single token (batch_size=1, seq_len=1)
     dummy_input = torch.randint(0, model_cfg.vocab_size, (1, 1), dtype=torch.long)
 
-    # Create dummy past key-value cache
+    # Create dummy past key-value cache (flattened)
     # For first token: use cache_len=1 with zeros (will be masked out)
     # Shape: (batch_size, n_heads, cache_seq_len, head_dim)
-    dummy_past_kv = []
+    dummy_past_kv_flat = []
     cache_seq_len = 1  # Minimal size for ONNX export
     head_dim = model_cfg.d_model // model_cfg.n_heads
 
     for _ in range(model_cfg.n_layers):
         k = torch.zeros(1, model_cfg.n_heads, cache_seq_len, head_dim)
         v = torch.zeros(1, model_cfg.n_heads, cache_seq_len, head_dim)
-        dummy_past_kv.append((k, v))
+        dummy_past_kv_flat.extend([k, v])
 
     # Build input and output names for ONNX
     input_names = ["input_ids"]
@@ -97,16 +144,13 @@ def export_to_onnx(
         dynamic_axes[f"present_key_values.{i}.key"] = {0: "batch_size", 2: "total_sequence_length"}
         dynamic_axes[f"present_key_values.{i}.value"] = {0: "batch_size", 2: "total_sequence_length"}
 
-    # Flatten inputs for ONNX export
-    # Structure: (input_ids, targets, past_kv_0_key, past_kv_0_value, ..., past_kv_N_value)
-    export_args = [dummy_input, None]  # idx, targets
-    for k, v in dummy_past_kv:
-        export_args.extend([k, v])
+    # Prepare inputs tuple: (input_ids, *past_kv_flat)
+    export_args = (dummy_input,) + tuple(dummy_past_kv_flat)
 
-    # Export with KV caching and dynamic axes
+    # Export with KV caching and dynamic axes (using legacy exporter)
     torch.onnx.export(
         model,
-        tuple(export_args),
+        export_args,
         str(onnx_path),
         export_params=True,
         opset_version=opset_version,
@@ -115,6 +159,7 @@ def export_to_onnx(
         output_names=output_names,
         dynamic_axes=dynamic_axes,
         verbose=False,
+        dynamo=False,  # Use legacy exporter for better dynamic_axes support
     )
 
     print(f"✓ Exported model to {onnx_path}")
